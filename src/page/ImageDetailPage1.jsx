@@ -1,302 +1,456 @@
 import React, {
-  useState,
   useEffect,
-  useCallback,
-  useRef,
+  useState,
   useMemo,
+  useRef,
+  useCallback,
 } from "react";
-import { Button, Typography, Card, message } from "antd";
-import { ArrowLeftOutlined } from "@ant-design/icons";
-import moment from "moment";
-import { useLocation, useNavigate } from "react-router-dom";
-import NavigationControls from "../components/NavigationControls";
-import ImageInfoDataItem from "../components/ImageInfoDataItem";
+import { Card } from "antd";
 import ImageInfoViewer from "../components/ImageInfoViewer";
+import NavigationControls from "../components/NavigationControls";
+import { imageJudge, judge } from "../api/imageAPI";
+import websocketService from "../api/websocket";
+import ImageInfoDataItem from "../components/ImageInfoDataItem";
+import moment from "moment";
 
 // 数据字段映射
 const keyToChinese = {
-  flowNo: "流水号",
-  voyage: "总运单号",
-  billNo: "分运单号",
-  pos: "扫描位置",
-  order: "审图指令",
-  sorder: "海关布控",
-  createDate: "过机时间",
-  otherInfo01: "申报重量",
-  otherInfo07: "申报价值",
-  otherInfo06: "申报数量",
-  otherInfo08: "申报企业",
-  otherInfo05: "主要物品",
+  mainCargoCode: "清单号",
+  subCargoCode: "分运单号",
+  businessId: "业务单号",
+  imgJudgment: "审图指令",
+  preJudgment: "海关布控",
+  createdTime: "过机时间",
+  materialWeight: "申报重量",
+  materialValue: "申报价值",
+  materialCount: "申报数量",
+  materialBaseName: "主要物品",
 };
 
-// 导航控制组件
+// 审阅结果映射
+const JUDGE_VALUES = {
+  RELEASE: 1, // 放行
+  CHECK: 2, // 查验
+};
+
+// 模式枚举
+const MODES = {
+  HTTP: "http",
+  WEBSOCKET: "websocket",
+};
+
+// 倒计时时间常量（秒）
+const COUNTDOWN_TIME = 5;
 
 const ImageDetailPage1 = () => {
-  const location = useLocation();
-  const navigate = useNavigate();
-  const [messageApi, contextHolder] = message.useMessage();
-
-  // 合并状态管理
-  const [state, setState] = useState({
-    // 图片相关状态
-    image: {
-      url: "",
-      zoomLevel: 1,
-      position: { x: 0, y: 0 },
-      rotation: 0, // 添加旋转角度状态
-      isDragging: false,
-      startPos: { x: 0, y: 0 },
-      isLoading: false,
-    },
-    // 数据相关状态
-    data: {
-      info: {},
-      list: [],
-      pageNum: 1,
-      pageSize: 10,
-      index: 0,
-      totalImages: 0,
-    },
-    // 搜索参数
-    searchParams: {},
+  // ref 引用
+  const handleWebSocketDataRef = useRef();
+  const isProcessingRef = useRef(false); // 防止重复请求
+  const isInCountdownRef = useRef(false); // 是否在倒计时中（关键状态）
+  const pendingWebSocketMessageRef = useRef(false); // 是否有待处理的WebSocket消息
+  
+  // 分离状态
+  const [imageData, setImageData] = useState({
+    url: "",
+    zoomLevel: 1,
+    position: { x: 0, y: 0 },
+    rotation: 0,
+    isDragging: false,
+    startPos: { x: 0, y: 0 },
+    isLoading: false,
   });
 
-  // 解析URL参数
-  const parseSearchParams = useCallback(() => {
-    const params = new URLSearchParams(location.search);
-    const parsedParams = {};
+  const [pageData, setPageData] = useState({
+    info: {},
+    list: [],
+    pageNum: 1,
+    pageSize: 10,
+    index: 0,
+    totalImages: 0,
+  });
 
-    for (let [key, value] of params.entries()) {
-      parsedParams[key] = value;
+  // 今日查验和放行统计
+  const [todayStats, setTodayStats] = useState({
+    failCount: 0, // 今日查验个数
+    passCount: 0, // 今日放行个数
+  });
+
+  // 倒计时状态
+  const [countdown, setCountdown] = useState(COUNTDOWN_TIME);
+  const [mode, setMode] = useState(MODES.HTTP);
+  const countdownTimerRef = useRef(null);
+  
+  // 存储当前图片ID
+  const currentScrollGraphIdRef = useRef("");
+  const currentBusinessIdRef = useRef("");
+  const [wsStatus, setWsStatus] = useState("disconnected");
+  const [lastNotification, setLastNotification] = useState(null);
+  
+  // 检查数据是否有效
+  const isValidData = useCallback((data) => {
+    return (
+      data &&
+      data.scrollGraphId &&
+      data.scrollGraphId !== "" &&
+      data.scrollGraphId !== null &&
+      data.imageBase64
+    );
+  }, []);
+
+  // 清除倒计时
+  const clearCountdown = useCallback(() => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
     }
-    return parsedParams;
-  }, [location.search]);
-
-  // 组件初始化时加载数据
-  useEffect(() => {
-    const params = parseSearchParams();
-    // 更新搜索参数状态
-    setState(prev => ({ ...prev, searchParams: params }));
-    // 加载图片数据
-    // loadImageData();
-  }, [location.search, parseSearchParams]);
-
-  // 缩放处理
-  const handleZoomIn = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      image: {
-        ...prev.image,
-        zoomLevel: Math.min(prev.image.zoomLevel + 0.1, 3),
-      },
-    }));
+    isInCountdownRef.current = false;
+    setCountdown(0);
   }, []);
 
-  const handleZoomOut = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      image: {
-        ...prev.image,
-        zoomLevel: Math.max(prev.image.zoomLevel - 0.1, 0.5),
-      },
-    }));
-  }, []);
+  // 开始倒计时
+  const startCountdown = useCallback(() => {
+    console.log("开始倒计时，标记为倒计时中");
+    
+    // 清除已有的倒计时
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+    }
+    
+    // 关键：标记为倒计时中（有图在审阅）
+    isInCountdownRef.current = true;
+    setCountdown(COUNTDOWN_TIME);
+    setMode(MODES.HTTP);
 
-  // 顺时针旋转处理
-  const handleRotateRight = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      image: {
-        ...prev.image,
-        rotation: prev.image.rotation + 90,
-      },
-    }));
-  }, []);
-
-  // 拖动处理
-  const handleMouseDown = useCallback((e) => {
-    setState((prev) => ({
-      ...prev,
-      image: {
-        ...prev.image,
-        isDragging: true,
-        startPos: {
-          x: e.clientX - prev.image.position.x,
-          y: e.clientY - prev.image.position.y,
-        },
-      },
-    }));
-  }, []);
-
-  const handleMouseMove = useCallback(
-    (e) => {
-      if (!state.image.isDragging) return;
-
-      const newX = e.clientX - state.image.startPos.x;
-      const newY = e.clientY - state.image.startPos.y;
-
-      // 使用事件目标的容器作为参考
-      const container = e.currentTarget;
-      if (container) {
-        const containerRect = container.getBoundingClientRect();
-
-        // 使用容器实际尺寸计算
-        const containerWidth = containerRect.width;
-        const containerHeight = containerRect.height;
-
-        // 估算图片实际尺寸（基于容器的百分比）
-        const imgWidth = containerWidth * 0.8 * state.image.zoomLevel;
-        const imgHeight = containerHeight * 0.8 * state.image.zoomLevel;
-
-        const maxX = Math.max(0, (imgWidth - containerWidth) / 2);
-        const maxY = Math.max(0, (imgHeight - containerHeight) / 2);
-
-        setState((prev) => ({
-          ...prev,
-          image: {
-            ...prev.image,
-            position: {
-              x: Math.max(-maxX, Math.min(newX, maxX)),
-              y: Math.max(-maxY, Math.min(newY, maxY)),
-            },
-          },
-        }));
-      }
-    },
-    [state.image.isDragging, state.image.startPos, state.image.zoomLevel]
-  );
-
-  const handleMouseUp = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      image: {
-        ...prev.image,
-        isDragging: false,
-      },
-    }));
-  }, []);
-
-  const handleWheel = useCallback(
-    (e) => {
-      // e.preventDefault();
-      console.log('handleWheel called', { deltaY: e.deltaY, currentZoom: state.image.zoomLevel });
-
-      const delta = e.deltaY > 0 ? -0.1 : 0.1;
-      const newZoomLevel = Math.max(
-        0.1,
-        Math.min(5, state.image.zoomLevel + delta)
-      );
-
-      setState((prev) => ({
-        ...prev,
-        image: {
-          ...prev.image,
-          zoomLevel: newZoomLevel,
-        },
-      }));
-    },
-    [state.image.zoomLevel]
-  );
-
-  // 上一张图片
-  const handlePrev = useCallback(() => {
-    console.log('handlePrev called', { currentIndex: state.data.index });
-    // 实现上一张图片逻辑
-  }, [state.data.index]);
-
-  // 下一张图片
-  const handleNext = useCallback(() => {
-    console.log('handleNext called', { currentIndex: state.data.index });
-    // 实现下一张图片逻辑
-  }, [state.data.index]);
-
-  // 导出图片
-  const handleExportImage = useCallback(() => {
-    console.log('handleExportImage called', { imageUrl: state.image.url });
-    messageApi.success('图片导出成功');
-  }, [state.image.url, messageApi]);
-
-  // 加载图片数据
-  const loadImageData = useCallback(async () => {
-    console.log('loadImageData called', { searchParams: state.searchParams });
-    try {
-      setState(prev => ({ ...prev, image: { ...prev.image, isLoading: true } }));
-      // 模拟API请求
-      // 实际项目中应替换为真实的API调用
-      const mockData = {
-        info: {
-          flowNo: 'MOCK123456',
-          voyage: 'VYG7890',
-          billNo: 'BL456789',
-          pos: 'A1',
-          order: '正常',
-          sorder: '无',
-          createDate: moment().format('YYYY-MM-DD HH:mm:ss'),
-          otherInfo01: '100kg',
-          otherInfo07: '5000USD',
-          otherInfo06: '50箱',
-          otherInfo08: '示例企业',
-          otherInfo05: '电子产品'
-        },
-        list: [],
-        pageNum: 1,
-        pageSize: 10,
-        index: 0,
-        totalImages: 1
-      };
-      
-      setState(prev => ({
-        ...prev,
-        data: mockData,
-        image: {
-          ...prev.image,
-          isLoading: false,
-          url: 'https://via.placeholder.com/800x600?text=Image+Detail'
+    countdownTimerRef.current = setInterval(() => {
+      setCountdown((prevCount) => {
+        if (prevCount <= 1) {
+          console.log("倒计时结束，自动放行");
+          
+          // 清除倒计时标记
+          isInCountdownRef.current = false;
+          clearCountdown();
+          
+          const scrollGraphId = currentScrollGraphIdRef.current;
+          const scanBarcode = currentBusinessIdRef.current;
+          
+          if (scrollGraphId && !isProcessingRef.current) {
+            isProcessingRef.current = true;
+            
+            judge({
+              scrollGraphId,
+              judge: JUDGE_VALUES.RELEASE,
+              scanBarcode,
+            })
+              .then((res) => {
+                if (res.code === 200 && res.data) {
+                  setTodayStats({
+                    failCount: res.data.failCount || 0,
+                    passCount: res.data.passCount || 0,
+                  });
+                }
+              })
+              .catch(console.error)
+              .finally(() => {
+                isProcessingRef.current = false;
+                // 检查是否有待处理的WebSocket消息
+                if (pendingWebSocketMessageRef.current) {
+                  console.log("有未处理的WebSocket消息，立即获取新图片");
+                  pendingWebSocketMessageRef.current = false;
+                  fetchImageData();
+                } else {
+                  // 正常获取新图片
+                  setTimeout(() => {
+                    fetchImageData();
+                  }, 100);
+                }
+              });
+          } else {
+            setTimeout(() => {
+              fetchImageData();
+            }, 100);
+          }
+          
+          return COUNTDOWN_TIME;
         }
-      }));
-      
-      messageApi.success('图片数据加载成功');
-    } catch (error) {
-      console.error('Failed to load image data:', error);
-      messageApi.error('图片数据加载失败');
-      setState(prev => ({ ...prev, image: { ...prev.image, isLoading: false } }));
+        return prevCount - 1;
+      });
+    }, 1000);
+  }, [clearCountdown]);
+
+  // 获取图片数据
+  const fetchImageData = useCallback(async () => {
+    if (isProcessingRef.current) {
+      console.log("正在处理中，跳过请求");
+      return;
     }
-  }, [state.searchParams, messageApi]);
-  
-  // 查验按钮处理函数
-  const handleCheck = useCallback(() => {
-    console.log('handleCheck called', { billNo: state.data.info.billNo });
-    messageApi.warning('已标记为查验');
-  }, [state.data.info.billNo, messageApi]);
-  
-  // 放行按钮处理函数
-  const handleRelease = useCallback(() => {
-    console.log('handleRelease called', { billNo: state.data.info.billNo });
-    messageApi.success('已标记为放行');
-  }, [state.data.info.billNo, messageApi]);
+
+    console.log("发起imageJudge请求获取新图片");
+    setImageData((prev) => ({ ...prev, isLoading: true }));
+    isProcessingRef.current = true;
+
+    try {
+      const res = await imageJudge();
+      console.log("imageJudge响应:", res);
+
+      if (res.code === 200 && res.data) {
+        const newData = res.data;
+        const isValid = isValidData(newData);
+
+        currentScrollGraphIdRef.current = newData?.scrollGraphId || "";
+        currentBusinessIdRef.current = newData?.businessId || "";
+        
+        if (isValid) {
+          setImageData((prev) => ({
+          ...prev,
+          url: newData?.imageBase64 || "",
+          isLoading: false,
+        }));
+
+        setPageData((prev) => ({
+          ...prev,
+          info: newData || {},
+          totalImages: newData?.totalImages || 0,
+        }));
+          console.log("获取到有效图片，开始倒计时");
+          startCountdown();
+        } else {
+          console.log("没有获取到有效图片，切换到WebSocket监听模式");
+          setMode(MODES.WEBSOCKET);
+          clearCountdown();
+          setImageData((prev) => ({ ...prev, isLoading: false }));
+          
+          // 如果没有图片，但有待处理的WebSocket消息，立即重试
+          if (pendingWebSocketMessageRef.current) {
+            console.log("有待处理的WebSocket消息，立即重试获取图片");
+            pendingWebSocketMessageRef.current = false;
+            setTimeout(() => {
+              fetchImageData();
+            }, 500);
+          }
+        }
+      } else {
+        console.log("没有可用的新图片，切换到WebSocket监听模式");
+        setMode(MODES.WEBSOCKET);
+        clearCountdown();
+        setImageData((prev) => ({ ...prev, isLoading: false }));
+      }
+    } catch (error) {
+      console.error("imageJudge请求失败:", error);
+      setMode(MODES.WEBSOCKET);
+      clearCountdown();
+      setImageData((prev) => ({ ...prev, isLoading: false }));
+    } finally {
+      isProcessingRef.current = false;
+    }
+  }, [isValidData, startCountdown, clearCountdown]);
+
+  // 处理judge请求（用户点击查验/放行）
+  const handleJudgeRequest = useCallback((judgeValue) => {
+    if (isProcessingRef.current) {
+      console.log("正在处理中，跳过请求");
+      return;
+    }
+
+    console.log("用户操作：", judgeValue === JUDGE_VALUES.CHECK ? "查验" : "放行");
+    
+    // 清除倒计时标记
+    isInCountdownRef.current = false;
+    clearCountdown();
+    
+    const scrollGraphId = currentScrollGraphIdRef.current;
+    const scanBarcode = currentBusinessIdRef.current;
+
+    if (!scrollGraphId) {
+      console.log("scrollGraphId为空，无法发送judge请求");
+      fetchImageData();
+      return;
+    }
+
+    console.log("发送judge请求:", { judgeValue, scrollGraphId, scanBarcode });
+
+    isProcessingRef.current = true;
+
+    judge({
+      scrollGraphId,
+      judge: judgeValue,
+      scanBarcode,
+    })
+      .then((res) => {
+        if (res.code === 200) {
+          console.log("judge请求成功");
+          if (res.data) {
+            setTodayStats({
+              failCount: res.data.failCount || 0,
+              passCount: res.data.passCount || 0,
+            });
+          }
+        }
+      })
+      .catch((error) => {
+        console.error("judge请求失败:", error);
+      })
+      .finally(() => {
+        isProcessingRef.current = false;
+        
+        // 检查是否有待处理的WebSocket消息
+        if (pendingWebSocketMessageRef.current) {
+          console.log("有未处理的WebSocket消息，立即获取新图片");
+          pendingWebSocketMessageRef.current = false;
+          fetchImageData();
+        } else {
+          // 正常获取新图片
+          setTimeout(() => {
+            fetchImageData();
+          }, 100);
+        }
+      });
+  }, [clearCountdown, fetchImageData]);
+
+  // WebSocket消息处理 - 关键修改
+  const handleWebSocketData = useCallback((data) => {
+    console.log("处理WebSocket数据:", data);
+
+    if (data && data.type === "new_image") {
+      console.log("收到新图片通知");
+      console.log("当前客户端状态：", {
+        正在处理中: isProcessingRef.current,
+        倒计时中: isInCountdownRef.current,
+        当前图片ID: currentScrollGraphIdRef.current,
+        有图片: !!imageData.url
+      });
+
+      // 关键逻辑：只有在以下情况才获取新图片
+      // 1. 当前没有在审图中（没有倒计时）
+      // 2. 当前没有正在处理的请求
+      
+      if (isProcessingRef.current) {
+        // 场景1：正在处理请求，标记有待处理消息
+        console.log("正在处理请求，标记有待处理的WebSocket消息");
+        pendingWebSocketMessageRef.current = true;
+      } else if (isInCountdownRef.current) {
+        // 场景2：在倒计时中（有图正在审阅）→ 忽略WebSocket消息
+        console.log("在倒计时中（有图片正在审阅），忽略WebSocket通知");
+        // 什么都不做，继续审阅当前图片
+      } else {
+        // 场景3：空闲状态（没有在审图中）→ 立即获取新图片
+        console.log("空闲状态，开始获取新图片");
+        // 添加随机延迟，避免多个空闲客户端同时请求
+        const delay = Math.random() * 300; // 0-300ms随机延迟
+        console.log(`延迟${delay.toFixed(0)}ms后获取`);
+        
+        setTimeout(() => {
+          if (!isProcessingRef.current && !isInCountdownRef.current) {
+            fetchImageData();
+          } else {
+            console.log("延迟期间状态发生变化，标记待处理");
+            pendingWebSocketMessageRef.current = true;
+          }
+        }, delay);
+      }
+    }
+  }, [fetchImageData]);
+
+  // 保持 ref 最新
+  useEffect(() => {
+    handleWebSocketDataRef.current = handleWebSocketData;
+  }, [handleWebSocketData]);
+
+  // 初始化WebSocket
+  useEffect(() => {
+    // 初始加载数据
+    fetchImageData();
+
+    // 初始化WebSocket连接
+    console.log("初始化WebSocket连接...");
+
+    websocketService.init(
+      () => {
+        console.log("WebSocket连接成功回调");
+        setWsStatus("connected");
+      },
+      (error) => {
+        console.error("WebSocket连接失败:", error);
+        setWsStatus("error");
+      }
+    );
+
+    // 注册消息处理器
+    const removeHandler = websocketService.addMessageHandler((message) => {
+      console.log("收到WebSocket消息:", message);
+      setLastNotification({
+        time: new Date().toLocaleTimeString(),
+        type: message.type,
+        data: message.data,
+      });
+
+      // 使用 ref 中的最新函数
+      if (handleWebSocketDataRef.current) {
+        handleWebSocketDataRef.current(message);
+      }
+    });
+
+    return () => {
+      clearCountdown();
+      removeHandler();
+    };
+  }, [fetchImageData, clearCountdown]);
+
+  // 倒计时模式切换监听
+  useEffect(() => {
+    console.log("模式切换:", mode, "倒计时中:", isInCountdownRef.current);
+
+    if (mode === MODES.HTTP && isInCountdownRef.current) {
+      // HTTP模式且倒计时中：确保倒计时运行
+      if (!countdownTimerRef.current) {
+        console.log("切换到HTTP模式且倒计时中，启动倒计时");
+        // 这里不应该直接调用startCountdown，因为它会重置倒计时
+        // 而是应该检查是否已经有倒计时在运行
+      }
+    } else if (mode === MODES.WEBSOCKET) {
+      // WebSocket模式：清除倒计时
+      console.log("切换到WebSocket模式，清除倒计时");
+      clearCountdown();
+    }
+  }, [mode, clearCountdown]);
+
 
   // 格式化数据项
   const formattedDataItems = useMemo(() => {
-    const items = [];
-    const { info } = state.data;
-    
-    console.log('formattedDataItems called', { info });
-    
-    for (const [key, label] of Object.entries(keyToChinese)) {
-      if (info[key]) {
-        items.push({
-          key,
-          label,
-          value: info[key]
-        });
+    const judgmentMap = {
+      1: "放行",
+      2: "查验",
+      3: "审核通过待放行",
+    };
+
+    const imgJudgmentMap = {
+      1: "放行",
+      2: "查验",
+    };
+
+    return Object.entries(keyToChinese).map(([key, label]) => {
+      let value = pageData.info[key];
+
+      if (key === "createdTime" && value) {
+        value = moment(value).format("YYYY-MM-DD HH:mm:ss");
       }
-    }
-    return items;
-  }, [state.data.info]);
+
+      if (key === "preJudgment") {
+        value = judgmentMap[value] || value;
+      }
+
+      if (key === "imgJudgment") {
+        value = imgJudgmentMap[value] || value;
+      }
+
+      return { key, label, value };
+    });
+  }, [pageData.info]);
+
+  // 空处理函数
+  const emptyHandler = () => {};
 
   return (
     <>
-      {contextHolder}
       <Card
         className="export-card-container"
         style={{
@@ -314,6 +468,20 @@ const ImageDetailPage1 = () => {
             }}
           >
             <span>图片详情</span>
+            {mode === MODES.HTTP && (
+              <div
+                style={{
+                  backgroundColor: "#ff4d4f",
+                  color: "white",
+                  padding: "4px 12px",
+                  borderRadius: "12px",
+                  fontSize: "16px",
+                  fontWeight: "bold",
+                }}
+              >
+                倒计时: {countdown}s
+              </div>
+            )}
           </div>
         }
       >
@@ -352,32 +520,33 @@ const ImageDetailPage1 = () => {
               }}
             >
               <ImageInfoViewer
-                imageUrl={state.image.url}
-                zoomLevel={state.image.zoomLevel}
-                position={state.image.position}
-                rotation={state.image.rotation}
-                isLoading={state.image.isLoading}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onWheel={handleWheel}
-                isDragging={state.image.isDragging}
+                imageUrl={imageData.url}
+                zoomLevel={imageData.zoomLevel}
+                position={imageData.position}
+                rotation={imageData.rotation}
+                isLoading={imageData.isLoading}
+                onMouseDown={emptyHandler}
+                onMouseMove={emptyHandler}
+                onMouseUp={emptyHandler}
+                onWheel={emptyHandler}
+                isDragging={imageData.isDragging}
               />
 
               <NavigationControls
-                onZoomIn={handleZoomIn}
-                onZoomOut={handleZoomOut}
-                onPrev={handlePrev}
-                onNext={handleNext}
-                onExport={handleExportImage}
-                onRotateRight={handleRotateRight}
-                onCheck={handleCheck}
-                onRelease={handleRelease}
-                currentIndex={state.data.index}
-                totalCount={state.data.totalImages}
-                billNo={state.data.info.billNo}
-                pageNum={state.searchParams.pageNum}
-                pageSize={state.searchParams.pageSize}
+                onZoomIn={emptyHandler}
+                onZoomOut={emptyHandler}
+                onPrev={emptyHandler}
+                onNext={emptyHandler}
+                onExport={emptyHandler}
+                onRotateRight={emptyHandler}
+                onCheck={() => handleJudgeRequest(JUDGE_VALUES.CHECK)}
+                onRelease={() => handleJudgeRequest(JUDGE_VALUES.RELEASE)}
+                currentIndex={pageData.index}
+                totalCount={pageData.totalImages}
+                billNo={pageData.info.billNo}
+                pageNum={pageData.pageNum}
+                pageSize={pageData.pageSize}
+                todayStats={todayStats}
               />
             </div>
           </div>

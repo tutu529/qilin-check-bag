@@ -83,7 +83,7 @@ const MyLayout = ({ children }) => {
             className="titleDiv"
             style={{ fontSize: 17, fontWeight: 600, marginLeft: 20 }}
           >
-            同屏比对查图系统
+            同屏比对系统
           </span>
           <div
             style={{

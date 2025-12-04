@@ -2,8 +2,8 @@ import service from "./service";
 
 export function getPoiList(data) {
   return service({
-    url: '/poi/v1/',
-    method: 'post',
-    data
+    url: '/file/api/get',
+    method: 'get',
+    params: data
   });
 }

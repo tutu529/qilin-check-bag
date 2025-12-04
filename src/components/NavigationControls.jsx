@@ -25,7 +25,8 @@ const NavigationControls = React.memo(
     totalCount,
     billNo = '',
     pageNum = 1,
-    pageSize = 10
+    pageSize = 10,
+    todayStats = { failCount: 0, passCount: 0 }
   }) => (
     <>
       {totalCount > 0 && (
@@ -108,7 +109,7 @@ const NavigationControls = React.memo(
             backgroundColor: '#fff1f0',
             borderRadius: '4px',
             border: '1px solid #ffccc7'
-          }}>0</span>
+          }}>{todayStats.failCount}</span>
         </div>
         <div style={{
           display: 'flex',
@@ -130,7 +131,7 @@ const NavigationControls = React.memo(
             backgroundColor: '#f6ffed',
             borderRadius: '4px',
             border: '1px solid #b7eb8f'
-          }}>0</span>
+          }}>{todayStats.passCount}</span>
         </div>
       </div>
     </>

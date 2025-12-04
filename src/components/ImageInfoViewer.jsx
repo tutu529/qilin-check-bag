@@ -17,38 +17,30 @@ const ImageInfoViewer = React.memo(
     isDragging,
   }) => {
     const [isImgLoaded, setIsImgLoaded] = useState(false);
-    const [countdown, setCountdown] = useState(6); // 六秒倒计时
-    const [isCounting, setIsCounting] = useState(false);
+    // const [countdown, setCountdown] = useState(6); // 六秒倒计时
+    // const [isCounting, setIsCounting] = useState(false);
     const imgRef = useRef(null);
     const containerRef = useRef(null);
     const countdownTimerRef = useRef(null);
 
     useEffect(() => {
       if (!imageUrl) {
-        setIsImgLoaded(false);
-        setIsCounting(false);
-        setCountdown(6);
-        if (countdownTimerRef.current) {
-          clearInterval(countdownTimerRef.current);
-        }
         return;
       }
 
       const img = new Image();
       imgRef.current = img;
       setIsImgLoaded(false);
-      setIsCounting(false);
-      setCountdown(6);
+      // setIsCounting(false);
+      // setCountdown(6);
       
-      if (countdownTimerRef.current) {
-        clearInterval(countdownTimerRef.current);
-      }
+      // if (countdownTimerRef.current) {
+      //   clearInterval(countdownTimerRef.current);
+      // }
 
       img.onload = () => {
         if (img === imgRef.current) {
           setIsImgLoaded(true);
-          // 图片加载成功后开始倒计时
-          startCountdown();
         }
       };
 
@@ -64,41 +56,41 @@ const ImageInfoViewer = React.memo(
         img.onload = null;
         img.onerror = null;
         img.src = '';
-        if (countdownTimerRef.current) {
-          clearInterval(countdownTimerRef.current);
-        }
+        // if (countdownTimerRef.current) {
+        //   clearInterval(countdownTimerRef.current);
+        // }
       };
     }, [imageUrl]);
 
     // 清理倒计时定时器
     useEffect(() => {
       return () => {
-        if (countdownTimerRef.current) {
-          clearInterval(countdownTimerRef.current);
-        }
+        // if (countdownTimerRef.current) {
+        //   clearInterval(countdownTimerRef.current);
+        // }
       };
     }, []);
 
-    // 开始倒计时函数
-    const startCountdown = () => {
-      setIsCounting(true);
-      setCountdown(6);
+    // // 开始倒计时函数
+    // const startCountdown = () => {
+    //   setIsCounting(true);
+    //   setCountdown(6);
       
-      if (countdownTimerRef.current) {
-        clearInterval(countdownTimerRef.current);
-      }
+    //   if (countdownTimerRef.current) {
+    //     clearInterval(countdownTimerRef.current);
+    //   }
       
-      countdownTimerRef.current = setInterval(() => {
-        setCountdown((prevCount) => {
-          if (prevCount <= 1) {
-            clearInterval(countdownTimerRef.current);
-            setIsCounting(false);
-            return 0;
-          }
-          return prevCount - 1;
-        });
-      }, 1000);
-    };
+    //   countdownTimerRef.current = setInterval(() => {
+    //     setCountdown((prevCount) => {
+    //       if (prevCount <= 1) {
+    //         clearInterval(countdownTimerRef.current);
+    //         setIsCounting(false);
+    //         return 0;
+    //       }
+    //       return prevCount - 1;
+    //     });
+    //   }, 1000);
+    // };
 
     const handleMouseMove = (e) => {
       e.preventDefault();
@@ -149,9 +141,11 @@ const ImageInfoViewer = React.memo(
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
       >
-        {isLoading || !isImgLoaded ? (
+        {!imageUrl ? (
+          <Text type="secondary" style={{ fontSize: '18px', fontWeight: 'bold' }}>无图片</Text>
+        ) : isLoading || !isImgLoaded ? (
           <Spin size="large" />
-        ) : imageUrl ? (
+        ) : (
           <>
             <img
               src={imageUrl}
@@ -166,28 +160,7 @@ const ImageInfoViewer = React.memo(
                 userSelect: 'none',
               }}
             />
-            {/* 右上角倒计时显示 */}
-            {isCounting && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: '10px',
-                  right: '10px',
-                  backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                  color: 'white',
-                  padding: '5px 10px',
-                  borderRadius: '4px',
-                  fontSize: '16px',
-                  fontWeight: 'bold',
-                  zIndex: 1000,
-                }}
-              >
-                {countdown}
-              </div>
-            )}
           </>
-        ) : (
-          <Text type="secondary">暂无图片</Text>
         )}
       </div>
     );

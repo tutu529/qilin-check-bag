@@ -7,8 +7,8 @@ const currentHost = window.location.hostname;
 // 设置基础API地址
 const LOCAL_IPS = ["192.168.1.7", "192.168.1.11","localhost"]; //开发ip
 const BASE_URL = LOCAL_IPS.includes(currentHost)
-  ? "http://localhost:8080"
-  : "http://192.168.1.3:8080";
+  ? "http://localhost:8081"
+  : "http://192.168.26.100:8081";
 
 // 创建axios实例
 const service = axios.create({
