@@ -8,7 +8,6 @@ class WebSocketService {
     this.isConnected = false;
     this.messageHandlers = new Set();
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
     
     // 服务器地址
     this.serverUrl = "http://192.168.26.100:8081/ws";
@@ -72,11 +71,7 @@ class WebSocketService {
       onWebSocketError: (error) => {
         console.error("WebSocket连接错误:", error);
         this.reconnectAttempts++;
-        
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-          console.error("达到最大重连次数，停止重连");
-          this.client.deactivate();
-        }
+        console.log("WebSocket重连尝试次数:", this.reconnectAttempts);
       }
     });
 

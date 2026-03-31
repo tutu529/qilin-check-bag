@@ -5,13 +5,15 @@ import React, {
   useRef,
   useCallback,
 } from "react";
-import { Card } from "antd";
+import { Card, Select, message } from "antd"; // 引入 Select 和 message 组件
 import ImageInfoViewer from "../components/ImageInfoViewer";
 import NavigationControls from "../components/NavigationControls";
 import { imageJudge, judge } from "../api/imageAPI";
 import websocketService from "../api/websocket";
 import ImageInfoDataItem from "../components/ImageInfoDataItem";
 import moment from "moment";
+
+const { Option } = Select;
 
 // 数据字段映射
 const keyToChinese = {
@@ -39,8 +41,11 @@ const MODES = {
   WEBSOCKET: "websocket",
 };
 
-// 倒计时时间常量（秒）
-const COUNTDOWN_TIME = 5;
+// 可选择的审图时间选项（秒）
+const COUNTDOWN_OPTIONS = [2, 3, 4, 5, 6];
+
+// 默认审图时间（秒）
+const DEFAULT_COUNTDOWN_TIME = 2;
 
 const ImageDetailPage1 = () => {
   // ref 引用
@@ -48,7 +53,11 @@ const ImageDetailPage1 = () => {
   const isProcessingRef = useRef(false); // 防止重复请求
   const isInCountdownRef = useRef(false); // 是否在倒计时中（关键状态）
   const pendingWebSocketMessageRef = useRef(false); // 是否有待处理的WebSocket消息
-  
+
+  // 新增：审图时间配置相关 ref
+  const countdownConfigRef = useRef(DEFAULT_COUNTDOWN_TIME); // 当前生效的时间配置
+  const pendingCountdownTimeRef = useRef(DEFAULT_COUNTDOWN_TIME); // 用户新选择的时间（用于下一张图片）
+
   // 分离状态
   const [imageData, setImageData] = useState({
     url: "",
@@ -76,16 +85,21 @@ const ImageDetailPage1 = () => {
   });
 
   // 倒计时状态
-  const [countdown, setCountdown] = useState(COUNTDOWN_TIME);
+  const [countdown, setCountdown] = useState(DEFAULT_COUNTDOWN_TIME);
   const [mode, setMode] = useState(MODES.HTTP);
+
+  // 新增：审图时间配置状态
+  const [selectedTime, setSelectedTime] = useState(DEFAULT_COUNTDOWN_TIME);
+  const [isTimeChangePending, setIsTimeChangePending] = useState(false);
+
   const countdownTimerRef = useRef(null);
-  
+
   // 存储当前图片ID
   const currentScrollGraphIdRef = useRef("");
   const currentBusinessIdRef = useRef("");
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [lastNotification, setLastNotification] = useState(null);
-  
+
   // 检查数据是否有效
   const isValidData = useCallback((data) => {
     return (
@@ -109,33 +123,33 @@ const ImageDetailPage1 = () => {
 
   // 开始倒计时
   const startCountdown = useCallback(() => {
-    console.log("开始倒计时，标记为倒计时中");
-    
+    console.log("开始倒计时，使用时间：", countdownConfigRef.current, "秒");
+
     // 清除已有的倒计时
     if (countdownTimerRef.current) {
       clearInterval(countdownTimerRef.current);
     }
-    
+
     // 关键：标记为倒计时中（有图在审阅）
     isInCountdownRef.current = true;
-    setCountdown(COUNTDOWN_TIME);
+    setCountdown(countdownConfigRef.current); // 使用当前生效的时间配置
     setMode(MODES.HTTP);
 
     countdownTimerRef.current = setInterval(() => {
       setCountdown((prevCount) => {
         if (prevCount <= 1) {
           console.log("倒计时结束，自动放行");
-          
+
           // 清除倒计时标记
           isInCountdownRef.current = false;
           clearCountdown();
-          
+
           const scrollGraphId = currentScrollGraphIdRef.current;
           const scanBarcode = currentBusinessIdRef.current;
-          
+
           if (scrollGraphId && !isProcessingRef.current) {
             isProcessingRef.current = true;
-            
+
             judge({
               scrollGraphId,
               judge: JUDGE_VALUES.RELEASE,
@@ -152,6 +166,7 @@ const ImageDetailPage1 = () => {
               .catch(console.error)
               .finally(() => {
                 isProcessingRef.current = false;
+
                 // 检查是否有待处理的WebSocket消息
                 if (pendingWebSocketMessageRef.current) {
                   console.log("有未处理的WebSocket消息，立即获取新图片");
@@ -169,8 +184,8 @@ const ImageDetailPage1 = () => {
               fetchImageData();
             }, 100);
           }
-          
-          return COUNTDOWN_TIME;
+
+          return countdownConfigRef.current;
         }
         return prevCount - 1;
       });
@@ -198,27 +213,47 @@ const ImageDetailPage1 = () => {
 
         currentScrollGraphIdRef.current = newData?.scrollGraphId || "";
         currentBusinessIdRef.current = newData?.businessId || "";
-        
+
         if (isValid) {
           setImageData((prev) => ({
-          ...prev,
-          url: newData?.imageBase64 || "",
-          isLoading: false,
-        }));
+            ...prev,
+            url: newData?.imageBase64 || "",
+            isLoading: false,
+          }));
 
-        setPageData((prev) => ({
-          ...prev,
-          info: newData || {},
-          totalImages: newData?.totalImages || 0,
-        }));
-          console.log("获取到有效图片，开始倒计时");
+          setPageData((prev) => ({
+            ...prev,
+            info: newData || {},
+            totalImages: newData?.totalImages || 0,
+          }));
+
+          // 关键逻辑：每次获取新图片时，检查是否有用户新选择的时间
+          // 如果有新选择的时间，就更新当前生效的时间配置
+          if (pendingCountdownTimeRef.current !== countdownConfigRef.current) {
+            console.log(
+              "新图片开始，应用新的审图时间：",
+              pendingCountdownTimeRef.current,
+              "秒",
+            );
+            countdownConfigRef.current = pendingCountdownTimeRef.current;
+            // 如果当前有倒计时待生效提示，清除它
+            if (isTimeChangePending) {
+              setIsTimeChangePending(false);
+            }
+          }
+
+          console.log(
+            "获取到有效图片，开始倒计时，时间：",
+            countdownConfigRef.current,
+            "秒",
+          );
           startCountdown();
         } else {
           console.log("没有获取到有效图片，切换到WebSocket监听模式");
           setMode(MODES.WEBSOCKET);
           clearCountdown();
           setImageData((prev) => ({ ...prev, isLoading: false }));
-          
+
           // 如果没有图片，但有待处理的WebSocket消息，立即重试
           if (pendingWebSocketMessageRef.current) {
             console.log("有待处理的WebSocket消息，立即重试获取图片");
@@ -244,111 +279,162 @@ const ImageDetailPage1 = () => {
     }
   }, [isValidData, startCountdown, clearCountdown]);
 
-  // 处理judge请求（用户点击查验/放行）
-  const handleJudgeRequest = useCallback((judgeValue) => {
-    if (isProcessingRef.current) {
-      console.log("正在处理中，跳过请求");
-      return;
-    }
-
-    console.log("用户操作：", judgeValue === JUDGE_VALUES.CHECK ? "查验" : "放行");
-    
-    // 清除倒计时标记
-    isInCountdownRef.current = false;
-    clearCountdown();
-    
-    const scrollGraphId = currentScrollGraphIdRef.current;
-    const scanBarcode = currentBusinessIdRef.current;
-
-    if (!scrollGraphId) {
-      console.log("scrollGraphId为空，无法发送judge请求");
-      fetchImageData();
-      return;
-    }
-
-    console.log("发送judge请求:", { judgeValue, scrollGraphId, scanBarcode });
-
-    isProcessingRef.current = true;
-
-    judge({
-      scrollGraphId,
-      judge: judgeValue,
-      scanBarcode,
-    })
-      .then((res) => {
-        if (res.code === 200) {
-          console.log("judge请求成功");
-          if (res.data) {
-            setTodayStats({
-              failCount: res.data.failCount || 0,
-              passCount: res.data.passCount || 0,
-            });
-          }
-        }
-      })
-      .catch((error) => {
-        console.error("judge请求失败:", error);
-      })
-      .finally(() => {
-        isProcessingRef.current = false;
-        
-        // 检查是否有待处理的WebSocket消息
-        if (pendingWebSocketMessageRef.current) {
-          console.log("有未处理的WebSocket消息，立即获取新图片");
-          pendingWebSocketMessageRef.current = false;
-          fetchImageData();
-        } else {
-          // 正常获取新图片
-          setTimeout(() => {
-            fetchImageData();
-          }, 100);
-        }
-      });
-  }, [clearCountdown, fetchImageData]);
-
-  // WebSocket消息处理 - 关键修改
-  const handleWebSocketData = useCallback((data) => {
-    console.log("处理WebSocket数据:", data);
-
-    if (data && data.type === "new_image") {
-      console.log("收到新图片通知");
-      console.log("当前客户端状态：", {
-        正在处理中: isProcessingRef.current,
-        倒计时中: isInCountdownRef.current,
-        当前图片ID: currentScrollGraphIdRef.current,
-        有图片: !!imageData.url
+  // 处理审图时间变更
+  const handleCountdownTimeChange = useCallback(
+    (newTime) => {
+      console.log("用户选择审图时间：", newTime, "秒");
+      console.log("当前状态：", {
+        正在审图中: isInCountdownRef.current,
+        当前生效时间: countdownConfigRef.current,
+        当前倒计时显示: countdown,
       });
 
-      // 关键逻辑：只有在以下情况才获取新图片
-      // 1. 当前没有在审图中（没有倒计时）
-      // 2. 当前没有正在处理的请求
-      
-      if (isProcessingRef.current) {
-        // 场景1：正在处理请求，标记有待处理消息
-        console.log("正在处理请求，标记有待处理的WebSocket消息");
-        pendingWebSocketMessageRef.current = true;
-      } else if (isInCountdownRef.current) {
-        // 场景2：在倒计时中（有图正在审阅）→ 忽略WebSocket消息
-        console.log("在倒计时中（有图片正在审阅），忽略WebSocket通知");
-        // 什么都不做，继续审阅当前图片
+      // 更新下拉框显示值
+      setSelectedTime(newTime);
+
+      // 记录用户选择的新时间（将用于下一张图片）
+      pendingCountdownTimeRef.current = newTime;
+
+      if (isInCountdownRef.current) {
+        // 正在审图中：显示提示，当前图片继续使用原来的时间
+        console.log("正在审图中，新时间将在下一张图片生效");
+        setIsTimeChangePending(true);
+        message.info(`审图时间已设置为 ${newTime} 秒，将在下一张图片生效`);
       } else {
-        // 场景3：空闲状态（没有在审图中）→ 立即获取新图片
-        console.log("空闲状态，开始获取新图片");
-        // 添加随机延迟，避免多个空闲客户端同时请求
-        const delay = Math.random() * 300; // 0-300ms随机延迟
-        console.log(`延迟${delay.toFixed(0)}ms后获取`);
-        
-        setTimeout(() => {
-          if (!isProcessingRef.current && !isInCountdownRef.current) {
+        // 当前空闲：立即更新配置时间
+        console.log("当前空闲，立即更新配置时间为：", newTime, "秒");
+        countdownConfigRef.current = newTime;
+        setIsTimeChangePending(false);
+        message.info(`审图时间已设置为 ${newTime} 秒`);
+
+        // 如果当前在HTTP模式但没有倒计时（理论上不会发生），重置时间
+        if (mode === MODES.HTTP && countdownTimerRef.current) {
+          // 这种情况不应该发生，但为了安全起见处理一下
+          console.log(
+            "意外情况：HTTP模式有计时器但没有倒计时标记，重新开始倒计时",
+          );
+          clearCountdown();
+          setCountdown(newTime);
+        }
+      }
+    },
+    [mode],
+  );
+
+  // 处理judge请求（用户点击查验/放行）
+  const handleJudgeRequest = useCallback(
+    (judgeValue) => {
+      if (isProcessingRef.current) {
+        console.log("正在处理中，跳过请求");
+        return;
+      }
+
+      console.log(
+        "用户操作：",
+        judgeValue === JUDGE_VALUES.CHECK ? "查验" : "放行",
+      );
+
+      // 清除倒计时标记
+      isInCountdownRef.current = false;
+      clearCountdown();
+
+      const scrollGraphId = currentScrollGraphIdRef.current;
+      const scanBarcode = currentBusinessIdRef.current;
+
+      if (!scrollGraphId) {
+        console.log("scrollGraphId为空，无法发送judge请求");
+        fetchImageData();
+        return;
+      }
+
+      console.log("发送judge请求:", { judgeValue, scrollGraphId, scanBarcode });
+
+      isProcessingRef.current = true;
+
+      judge({
+        scrollGraphId,
+        judge: judgeValue,
+        scanBarcode,
+      })
+        .then((res) => {
+          if (res.code === 200) {
+            console.log("judge请求成功");
+            if (res.data) {
+              setTodayStats({
+                failCount: res.data.failCount || 0,
+                passCount: res.data.passCount || 0,
+              });
+            }
+          }
+        })
+        .catch((error) => {
+          console.error("judge请求失败:", error);
+        })
+        .finally(() => {
+          isProcessingRef.current = false;
+
+          // 检查是否有待处理的WebSocket消息
+          if (pendingWebSocketMessageRef.current) {
+            console.log("有未处理的WebSocket消息，立即获取新图片");
+            pendingWebSocketMessageRef.current = false;
             fetchImageData();
           } else {
-            console.log("延迟期间状态发生变化，标记待处理");
-            pendingWebSocketMessageRef.current = true;
+            // 正常获取新图片
+            setTimeout(() => {
+              fetchImageData();
+            }, 100);
           }
-        }, delay);
+        });
+    },
+    [clearCountdown, fetchImageData],
+  );
+
+  // WebSocket消息处理 - 关键修改
+  const handleWebSocketData = useCallback(
+    (data) => {
+      console.log("处理WebSocket数据:", data);
+
+      if (data && data.type === "new_image") {
+        console.log("收到新图片通知");
+        console.log("当前客户端状态：", {
+          正在处理中: isProcessingRef.current,
+          倒计时中: isInCountdownRef.current,
+          当前图片ID: currentScrollGraphIdRef.current,
+          有图片: !!imageData.url,
+        });
+
+        // 关键逻辑：只有在以下情况才获取新图片
+        // 1. 当前没有在审图中（没有倒计时）
+        // 2. 当前没有正在处理的请求
+
+        if (isProcessingRef.current) {
+          // 场景1：正在处理请求，标记有待处理消息
+          console.log("正在处理请求，标记有待处理的WebSocket消息");
+          pendingWebSocketMessageRef.current = true;
+        } else if (isInCountdownRef.current) {
+          // 场景2：在倒计时中（有图正在审阅）→ 忽略WebSocket消息
+          console.log("在倒计时中（有图片正在审阅），忽略WebSocket通知");
+          // 什么都不做，继续审阅当前图片
+        } else {
+          // 场景3：空闲状态（没有在审图中）→ 立即获取新图片
+          console.log("空闲状态，开始获取新图片");
+          // 添加随机延迟，避免多个空闲客户端同时请求
+          const delay = Math.random() * 300; // 0-300ms随机延迟
+          console.log(`延迟${delay.toFixed(0)}ms后获取`);
+
+          setTimeout(() => {
+            if (!isProcessingRef.current && !isInCountdownRef.current) {
+              fetchImageData();
+            } else {
+              console.log("延迟期间状态发生变化，标记待处理");
+              pendingWebSocketMessageRef.current = true;
+            }
+          }, delay);
+        }
       }
-    }
-  }, [fetchImageData]);
+    },
+    [fetchImageData],
+  );
 
   // 保持 ref 最新
   useEffect(() => {
@@ -371,7 +457,7 @@ const ImageDetailPage1 = () => {
       (error) => {
         console.error("WebSocket连接失败:", error);
         setWsStatus("error");
-      }
+      },
     );
 
     // 注册消息处理器
@@ -412,7 +498,6 @@ const ImageDetailPage1 = () => {
       clearCountdown();
     }
   }, [mode, clearCountdown]);
-
 
   // 格式化数据项
   const formattedDataItems = useMemo(() => {
@@ -468,20 +553,54 @@ const ImageDetailPage1 = () => {
             }}
           >
             <span>图片详情</span>
-            {mode === MODES.HTTP && (
+            <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+              {/* 审图时间选择下拉框 */}
               <div
-                style={{
-                  backgroundColor: "#ff4d4f",
-                  color: "white",
-                  padding: "4px 12px",
-                  borderRadius: "12px",
-                  fontSize: "16px",
-                  fontWeight: "bold",
-                }}
+                style={{ display: "flex", alignItems: "center", gap: "8px" }}
               >
-                倒计时: {countdown}s
+                <span style={{ fontSize: "14px", color: "#666" }}>
+                  审图时间：
+                </span>
+                <Select
+                  value={selectedTime}
+                  onChange={handleCountdownTimeChange}
+                  style={{ width: 80 }}
+                  size="small"
+                >
+                  {COUNTDOWN_OPTIONS.map((time) => (
+                    <Option key={time} value={time}>
+                      {time}秒
+                    </Option>
+                  ))}
+                </Select>
+                {isTimeChangePending && (
+                  <span
+                    style={{
+                      fontSize: "12px",
+                      color: "#faad14",
+                      marginLeft: "8px",
+                    }}
+                  >
+                    (新时间将在下一张图片生效)
+                  </span>
+                )}
               </div>
-            )}
+
+              {mode === MODES.HTTP && (
+                <div
+                  style={{
+                    backgroundColor: "#ff4d4f",
+                    color: "white",
+                    padding: "4px 12px",
+                    borderRadius: "12px",
+                    fontSize: "16px",
+                    fontWeight: "bold",
+                  }}
+                >
+                  倒计时: {countdown}s
+                </div>
+              )}
+            </div>
           </div>
         }
       >
